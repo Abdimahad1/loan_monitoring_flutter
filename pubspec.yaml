@@ -1,0 +1,52 @@
+name: loan_monitoring_flutter
+description: Professional Loan Monitoring Application
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"  # Slightly lower for better compatibility
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # UI & Animation
+  cupertino_icons: ^1.0.8
+  google_nav_bar: ^5.0.6
+  animations: ^2.0.11
+  shimmer: ^3.0.0
+  flutter_staggered_animations: ^1.1.0
+
+  # Charts & Data Visualization
+  fl_chart: ^0.68.0
+
+  # API & Storage
+  http: ^1.1.0
+  flutter_secure_storage: ^9.0.0
+
+  # Utilities
+  intl: ^0.19.0
+  url_launcher: ^6.3.0
+  cached_network_image: ^3.4.0
+
+  # State Management
+  provider: ^6.1.2
+
+  # Image Picker (for profile/ID uploads)
+  image_picker: ^1.0.7
+  file_picker: ^8.0.0+1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Assets - Uncomment and create these folders in your project
+  assets:
+    - assets/images/
+    - assets/icons/
+    - assets/animations/
