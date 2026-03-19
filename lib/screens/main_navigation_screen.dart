@@ -7,8 +7,9 @@ import '../borrower_screens/dashboard_screen.dart';
 import '../borrower_screens/my_loans_screen.dart';
 import '../borrower_screens/notifications_screen.dart';
 import '../borrower_screens/payments_screen.dart';
-import '../borrower_screens/profile_screen.dart';
+import '../borrower_screens/profile_screen.dart';  // Borrower profile
 import '../guarantor_screens/guarantor_loans_screen.dart';
+import '../guarantor_screens/guarantor_profile_screen.dart';  // NEW: Guarantor profile
 import '../utils/app_constants.dart';
 
 class MainNavigationScreen extends StatefulWidget {
@@ -46,26 +47,26 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         MyLoansScreen(),
         PaymentsScreen(),
         NotificationsScreen(),
-        ProfileScreen(),
+        ProfileScreen(),  // Borrower profile
       ];
     } else if (_currentUser!.isGuarantor) {
       return const [
-        GuarantorDashboard(),      // Your new dashboard
-        GuarantorLoansScreen(),    // Your new loans list
-        NotificationsScreen(),     // Common notifications
-        ProfileScreen(),           // Common profile
+        GuarantorDashboard(),
+        GuarantorLoansScreen(),
+        NotificationsScreen(),
+        GuarantorProfileScreen(),  // NEW: Guarantor profile
       ];
     } else {
-      // Fallback for admin (shouldn't happen in mobile app)
+      // Fallback for admin
       return const [
         DashboardScreen(),
         NotificationsScreen(),
-        ProfileScreen(),
+        ProfileScreen(),  // Fallback to borrower profile
       ];
     }
   }
 
-  List<GButton> _getTabs() {  // Only ONE method
+  List<GButton> _getTabs() {
     if (_currentUser == null) return [];
 
     if (_currentUser!.isBorrower) {
@@ -98,7 +99,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           text: 'Home',
         ),
         GButton(
-          icon: Icons.shield,  // Changed to shield for guarantees
+          icon: Icons.shield,
           text: 'Guarantees',
         ),
         GButton(

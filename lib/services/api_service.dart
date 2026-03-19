@@ -15,15 +15,15 @@ class ApiService {
   // ==================== CONFIGURATION ====================
 
   // Base URL - Change this based on your environment
-  static const String _baseUrl = 'http://192.168.100.25:5000'; // Your computer IP
+  //static const String _baseUrl = 'http://192.168.100.25:5000'; // Your computer IP
 
   // Alternative environments (uncomment as needed)
-  // static const String _baseUrl = 'http://10.0.2.2:5000'; // For Android emulator
+  static const String _baseUrl = 'http://10.0.2.2:5000'; // For Android emulator
   // static const String _baseUrl = 'http://localhost:5000'; // For iOS simulator
 
   // ==================== API ENDPOINTS ====================
 
-// Auth Endpoints
+  // Auth Endpoints
   static const String _loginEndpoint = '/api/auth/login';
   static const String _registerEndpoint = '/api/auth/register';
   static const String _meEndpoint = '/api/auth/me';
@@ -31,7 +31,7 @@ class ApiService {
   static const String _changePasswordEndpoint = '/api/auth/change-password';
   static const String _authProfileEndpoint = '/api/auth/profile';
 
-// User Endpoints (Admin only)
+  // User Endpoints (Admin only)
   static const String _usersEndpoint = '/api/users';
   static const String _adminUserProfileEndpoint = '/api/users/profile';
 
@@ -451,9 +451,7 @@ class ApiService {
     }
   }
 
-// Add these to your ApiService class in api_service.dart
-
-// ==================== PAYMENT SERVICES (NEW) ====================
+// ==================== PAYMENT SERVICES ====================
 
   /// Process a loan payment through WaafiPay
   Future<Map<String, dynamic>> processLoanPayment({
@@ -823,10 +821,7 @@ class ApiService {
     }
   }
 
-  // Add this to your ApiService class in api_service.dart
-// Place it after the Loan Services section and before the User/Profile Services
-
-// ==================== GUARANTOR SERVICES ====================
+  // ==================== GUARANTOR SERVICES ====================
 
   /// Get guarantor dashboard statistics
   Future<Map<String, dynamic>> getGuarantorStats() async {
@@ -1113,7 +1108,65 @@ class ApiService {
     }
   }
 
-  /// Mark notification as read
+  // ==================== NOTIFICATION SERVICES ====================
+
+  /// Get notifications with pagination
+  Future<Map<String, dynamic>> getNotifications({
+    int page = 1,
+    int limit = 20,
+    bool? isRead,
+    String? type,
+  }) async {
+    try {
+      final token = await getToken();
+      if (token == null) {
+        return {
+          'success': false,
+          'message': 'Not authenticated',
+          'data': [],
+        };
+      }
+
+      String url = '$_baseUrl/api/notifications?page=$page&limit=$limit';
+      if (isRead != null) url += '&isRead=$isRead';
+      if (type != null && type != 'all') url += '&type=$type';
+
+      print('🔔 Fetching notifications: $url');
+
+      final response = await http.get(
+        Uri.parse(url),
+        headers: await _getHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      final data = json.decode(response.body);
+      print('🔔 Notifications response: ${response.body}');
+
+      if (response.statusCode == 200 && data['success']) {
+        return {
+          'success': true,
+          'data': data['data'] ?? [],
+          'pagination': data['pagination'] ?? {
+            'page': page,
+            'limit': limit,
+            'total': 0,
+            'pages': 1,
+            'unreadCount': 0
+          },
+        };
+      } else {
+        return {
+          'success': false,
+          'message': data['message'] ?? 'Failed to get notifications',
+          'data': [],
+        };
+      }
+    } catch (e) {
+      print('❌ Error fetching notifications: $e');
+      return _handleError(e);
+    }
+  }
+
+  /// Mark notification as read (uses general notifications endpoint, not guarantor)
   Future<Map<String, dynamic>> markNotificationAsRead(String notificationId) async {
     try {
       final token = await getToken();
@@ -1124,33 +1177,105 @@ class ApiService {
         };
       }
 
-      print('✅ Marking notification as read: $notificationId'); // Debug log
-
       final response = await http.put(
-        Uri.parse('$_baseUrl/api/guarantor/notifications/$notificationId/read'),
+        Uri.parse('$_baseUrl/api/notifications/$notificationId/read'),
         headers: await _getHeaders(),
       ).timeout(const Duration(seconds: 10));
 
       final data = json.decode(response.body);
-      print('✅ Mark read response: ${response.body}'); // Debug log
-
-      if (response.statusCode == 200 && data['success']) {
-        return {
-          'success': true,
-          'message': data['message'] ?? 'Notification marked as read',
-        };
-      } else {
-        return {
-          'success': false,
-          'message': data['message'] ?? 'Failed to mark notification as read',
-        };
-      }
+      return data;
     } catch (e) {
       print('❌ Error marking notification as read: $e');
       return _handleError(e);
     }
   }
 
+  /// Mark all notifications as read
+  Future<Map<String, dynamic>> markAllNotificationsAsRead() async {
+    try {
+      final token = await getToken();
+      if (token == null) {
+        return {
+          'success': false,
+          'message': 'Not authenticated',
+        };
+      }
+
+      final response = await http.put(
+        Uri.parse('$_baseUrl/api/notifications/read-all'),
+        headers: await _getHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      final data = json.decode(response.body);
+      return data;
+    } catch (e) {
+      print('❌ Error marking all as read: $e');
+      return _handleError(e);
+    }
+  }
+
+  /// Archive notification
+  Future<Map<String, dynamic>> archiveNotification(String notificationId) async {
+    try {
+      final token = await getToken();
+      if (token == null) {
+        return {
+          'success': false,
+          'message': 'Not authenticated',
+        };
+      }
+
+      final response = await http.put(
+        Uri.parse('$_baseUrl/api/notifications/$notificationId/archive'),
+        headers: await _getHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      final data = json.decode(response.body);
+      return data;
+    } catch (e) {
+      print('❌ Error archiving notification: $e');
+      return _handleError(e);
+    }
+  }
+
+  /// Get unread count
+  Future<Map<String, dynamic>> getUnreadCount() async {
+    try {
+      final token = await getToken();
+      if (token == null) {
+        return {
+          'success': false,
+          'message': 'Not authenticated',
+          'count': 0,
+        };
+      }
+
+      final response = await http.get(
+        Uri.parse('$_baseUrl/api/notifications/unread-count'),
+        headers: await _getHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      final data = json.decode(response.body);
+
+      if (response.statusCode == 200 && data['success']) {
+        return {
+          'success': true,
+          'count': data['count'] ?? 0,
+        };
+      } else {
+        return {
+          'success': false,
+          'count': 0,
+        };
+      }
+    } catch (e) {
+      print('❌ Error fetching unread count: $e');
+      return {
+        'success': false,
+        'count': 0,
+      };
+    }
+  }
 
   /// Get base URL (useful for debugging)
   static String get baseUrl => _baseUrl;

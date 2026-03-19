@@ -16,6 +16,7 @@ class _StartingScreenState extends State<StartingScreen>
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
   late Animation<double> _scaleAnimation;
+  Timer? _navigationTimer; // ADD THIS
 
   @override
   void initState() {
@@ -48,7 +49,7 @@ class _StartingScreenState extends State<StartingScreen>
   }
 
   void _navigateAfterDelay() {
-    Timer(const Duration(seconds: 3), () {
+    _navigationTimer = Timer(const Duration(seconds: 3), () {
       if (mounted) {
         Navigator.pushReplacement(
           context,
@@ -71,6 +72,7 @@ class _StartingScreenState extends State<StartingScreen>
 
   @override
   void dispose() {
+    _navigationTimer?.cancel(); // ADD THIS
     _controller.dispose();
     super.dispose();
   }
@@ -119,7 +121,7 @@ class _StartingScreenState extends State<StartingScreen>
                         const SizedBox(height: 32),
 
                         // App Name with Typing Effect
-                        _AnimatedAppName(),
+                        const _AnimatedAppName(), // CHANGED: Added const
 
                         const SizedBox(height: 16),
 
@@ -160,6 +162,8 @@ class _StartingScreenState extends State<StartingScreen>
 }
 
 class _AnimatedAppName extends StatefulWidget {
+  const _AnimatedAppName({super.key}); // ADDED: const constructor
+
   @override
   State<_AnimatedAppName> createState() => __AnimatedAppNameState();
 }
@@ -170,6 +174,10 @@ class __AnimatedAppNameState extends State<_AnimatedAppName> {
   int currentIndex = 0;
   bool showCursor = true;
 
+  // ADD THESE TIMER VARIABLES
+  Timer? _typingTimer;
+  Timer? _cursorTimer;
+
   @override
   void initState() {
     super.initState();
@@ -178,12 +186,14 @@ class __AnimatedAppNameState extends State<_AnimatedAppName> {
   }
 
   void _startTyping() {
-    Timer.periodic(const Duration(milliseconds: 100), (timer) {
+    _typingTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
       if (currentIndex < fullText.length) {
-        setState(() {
-          displayedText += fullText[currentIndex];
-          currentIndex++;
-        });
+        if (mounted) { // ADD THIS CHECK
+          setState(() {
+            displayedText += fullText[currentIndex];
+            currentIndex++;
+          });
+        }
       } else {
         timer.cancel();
       }
@@ -191,11 +201,21 @@ class __AnimatedAppNameState extends State<_AnimatedAppName> {
   }
 
   void _blinkCursor() {
-    Timer.periodic(const Duration(milliseconds: 500), (timer) {
-      setState(() {
-        showCursor = !showCursor;
-      });
+    _cursorTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (mounted) { // ADD THIS CHECK
+        setState(() {
+          showCursor = !showCursor;
+        });
+      }
     });
+  }
+
+  // ADD THIS DISPOSE METHOD
+  @override
+  void dispose() {
+    _typingTimer?.cancel();
+    _cursorTimer?.cancel();
+    super.dispose();
   }
 
   @override

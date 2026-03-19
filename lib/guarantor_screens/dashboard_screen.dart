@@ -42,6 +42,19 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
   final NumberFormat _currencyFormat = NumberFormat.currency(symbol: '\$');
   final DateFormat _dateFormat = DateFormat('MMM dd, yyyy');
 
+  // Helper method to safely convert any value to double
+  double _toDouble(dynamic value) {
+    if (value == null) return 0.0;
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) {
+      final parsed = double.tryParse(value);
+      return parsed ?? 0.0;
+    }
+    if (value is num) return value.toDouble();
+    return 0.0;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -78,11 +91,11 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
     }
 
     try {
-      // Load stats and recent loans in parallel
+      // Load stats and loans
       final results = await Future.wait([
         _apiService.getGuarantorStats(),
         _apiService.getGuarantorLoans(limit: 3), // Get 3 most recent loans
-        _apiService.getGuarantorNotifications(limit: 1), // Just to get count
+        _apiService.getGuarantorNotifications(limit: 1),
       ]);
 
       final statsResult = results[0];
@@ -90,22 +103,28 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
       final notificationsResult = results[2];
 
       if (mounted) {
-        setState(() {
-          // Update stats
-          if (statsResult['success']) {
+        // Update stats
+        if (statsResult['success']) {
+          setState(() {
             _stats = statsResult['data'] ?? _stats;
-          }
+          });
+        }
 
-          // Update recent loans
-          if (loansResult['success']) {
+        // Update recent loans
+        if (loansResult['success']) {
+          setState(() {
             _recentLoans = loansResult['data'] ?? [];
-          }
+          });
+        }
 
-          // Update notification count
-          if (notificationsResult['success']) {
+        // Update notification count
+        if (notificationsResult['success']) {
+          setState(() {
             _notificationCount = notificationsResult['pagination']?['total'] ?? 0;
-          }
+          });
+        }
 
+        setState(() {
           _isLoading = false;
           _isRefreshing = false;
         });
@@ -247,7 +266,7 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
                 ),
               ),
 
-              // Loans List
+              // Loans List - WITHOUT PROGRESS
               SliverPadding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 sliver: !hasLoans
@@ -567,7 +586,7 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
   Widget _buildGuarantorLoanCard(Map<String, dynamic> loan) {
     final status = loan['status']?.toString().toLowerCase() ?? 'unknown';
     final risk = loan['risk']?['level']?.toString().toLowerCase() ?? 'low';
-    final progress = loan['progress'] ?? 0.0;
+    final totalAmount = _toDouble(loan['amount'] ?? 0);
     final nextPayment = loan['nextPayment'];
 
     Color statusColor;
@@ -706,7 +725,7 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
 
                 const SizedBox(height: 16),
 
-                // Amount & Progress Row
+                // Amount & Risk Row
                 Row(
                   children: [
                     Expanded(
@@ -722,12 +741,20 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            _currencyFormat.format(loan['amount'] ?? 0),
+                            _currencyFormat.format(totalAmount),
                             style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
+                          if (loan['term'] != null)
+                            Text(
+                              '${loan['term']} months',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                         ],
                       ),
                     ),
@@ -754,7 +781,9 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Text(
-                              '${(progress * 100).toInt()}% repaid',
+                              loan['startDate'] != null
+                                  ? 'Started: ${_dateFormat.format(DateTime.parse(loan['startDate']))}'
+                                  : 'Status: ${status.toUpperCase()}',
                               style: TextStyle(
                                 fontSize: 10,
                                 color: _getRiskColor(risk),
@@ -770,28 +799,32 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
 
                 const SizedBox(height: 12),
 
-                // Progress Bar
-                Stack(
+                // Simple Divider
+                Container(
+                  height: 1,
+                  color: Colors.grey[200],
+                ),
+
+                const SizedBox(height: 12),
+
+                // Loan Details Row
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Container(
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: Colors.grey[200],
-                        borderRadius: BorderRadius.circular(3),
-                      ),
+                    _buildDetailChip(
+                      'Term',
+                      '${loan['term'] ?? 0} months',
+                      Icons.access_time,
                     ),
-                    Container(
-                      height: 6,
-                      width: MediaQuery.of(context).size.width * 0.5 * progress,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            status == 'overdue' ? Colors.orange : AppColors.primaryGreen,
-                            status == 'overdue' ? Colors.red : AppColors.primaryLight,
-                          ],
-                        ),
-                        borderRadius: BorderRadius.circular(3),
-                      ),
+                    _buildDetailChip(
+                      'Interest',
+                      '${loan['interestRate'] ?? 0}%',
+                      Icons.percent,
+                    ),
+                    _buildDetailChip(
+                      'Guaranteed',
+                      _currencyFormat.format(totalAmount),
+                      Icons.shield,
                     ),
                   ],
                 ),
@@ -819,14 +852,27 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: Text(
-                            status == 'overdue'
-                                ? 'Payment overdue'
-                                : 'Next payment due',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: status == 'overdue' ? Colors.red : Colors.blue.shade700,
-                            ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                status == 'overdue'
+                                    ? 'Payment overdue'
+                                    : 'Next payment due',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: status == 'overdue' ? Colors.red : Colors.blue.shade700,
+                                ),
+                              ),
+                              if (nextPayment['dueDate'] != null)
+                                Text(
+                                  _dateFormat.format(DateTime.parse(nextPayment['dueDate'])),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: status == 'overdue' ? Colors.red.shade700 : Colors.blue.shade700,
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
                         Text(
@@ -845,6 +891,29 @@ class _GuarantorDashboardState extends State<GuarantorDashboard> with SingleTick
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDetailChip(String label, String value, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 10, color: AppColors.textSecondary),
+          const SizedBox(width: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }

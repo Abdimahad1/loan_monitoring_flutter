@@ -4,6 +4,8 @@ import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../services/api_service.dart';
 import '../utils/app_constants.dart';
+import '../widgets/payment_tile.dart';
+import '../widgets/installment_tile.dart';
 
 class GuarantorLoanDetailsScreen extends StatefulWidget {
   final String loanId;
@@ -17,22 +19,22 @@ class GuarantorLoanDetailsScreen extends StatefulWidget {
 class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen> with SingleTickerProviderStateMixin {
   bool _isLoading = true;
   bool _isRefreshing = false;
+  Map<String, dynamic> _loan = {};
+  List<dynamic> _schedule = [];
+  List<dynamic> _payments = [];
   int _currentTabIndex = 0;
 
   late TabController _tabController;
 
-  // Data from API
-  Map<String, dynamic> _loan = {};
-  List<dynamic> _schedule = [];
-  List<dynamic> _payments = [];
-  Map<String, dynamic> _risk = {};
-
   final ApiService _apiService = ApiService();
-  final NumberFormat _currencyFormat = NumberFormat.currency(symbol: '\$');
+  final NumberFormat _currencyFormat = NumberFormat.currency(
+    symbol: '\$',
+    decimalDigits: 2,
+  );
   final DateFormat _dateFormat = DateFormat('MMM dd, yyyy');
   final DateFormat _timeFormat = DateFormat('hh:mm a');
 
-  // Helper method to safely convert to double
+  // Helper method to safely convert any value to double
   double _toDouble(dynamic value) {
     if (value == null) return 0.0;
     if (value is double) return value;
@@ -67,15 +69,7 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
       setState(() {
         _currentTabIndex = _tabController.index;
       });
-
-      // Lazy load data when tabs are switched
-      if (_currentTabIndex == 1 && _schedule.isEmpty) {
-        _loadSchedule();
-      } else if (_currentTabIndex == 2 && _payments.isEmpty) {
-        _loadPayments();
-      }
     });
-
     _loadLoanDetails();
   }
 
@@ -91,29 +85,141 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
     }
 
     try {
-      // Load main loan details
-      final result = await _apiService.getGuarantorLoanDetails(widget.loanId);
+      print('🔄 Loading guarantor loan details for ID: ${widget.loanId}');
+
+      // First get the loan details using guarantor endpoint
+      final loanResult = await _apiService.getGuarantorLoanDetails(widget.loanId);
+
+      // Then get payment history using guarantor-specific payment endpoint
+      final paymentsResult = await _apiService.getGuarantorLoanPayments(widget.loanId);
 
       if (mounted) {
-        if (result['success']) {
-          setState(() {
-            _loan = result['data'] ?? {};
-            _risk = _loan['risk'] ?? {};
-            _isLoading = false;
-            _isRefreshing = false;
+        if (loanResult['success'] == true) {
+          final loan = loanResult['data'] as Map<String, dynamic>;
+
+          print('📊 Loan data received:');
+          print('  - Loan ID: ${loan['loanId']}');
+          print('  - Status: ${loan['status']}');
+          print('  - Amount: ${loan['amount']}');
+
+          // Calculate paid amount from payments
+          double totalPaidAmount = 0;
+          List<dynamic> allPayments = [];
+
+          if (paymentsResult['success'] == true) {
+            final paymentsData = paymentsResult['data'] ?? {};
+            final payments = paymentsData['payments'] ?? [];
+
+            print('💰 Found ${payments.length} payments');
+
+            for (var payment in payments) {
+              if (payment is Map<String, dynamic>) {
+                print('  💰 Payment: ${payment['amount']} - ${payment['status']}');
+
+                if (payment['status']?.toString().toLowerCase() == 'success') {
+                  final amount = _toDouble(payment['amount']);
+                  totalPaidAmount += amount;
+                  print('    ✅ Adding: $amount (total now: $totalPaidAmount)');
+                }
+
+                final processedPayment = _processPaymentObject(payment);
+                if (processedPayment != null) {
+                  allPayments.add(processedPayment);
+                }
+              }
+            }
+          }
+
+          // If no payments found, use the paidAmount from the loan object
+          if (totalPaidAmount == 0) {
+            totalPaidAmount = _toDouble(loan['paidAmount']);
+            print('📊 Using paid amount from loan object: $totalPaidAmount');
+          }
+
+          // Process schedule and mark installments as paid based on payments
+          final List<dynamic> processedSchedule = [];
+          if (loan['schedule'] != null && loan['schedule'] is List) {
+            final scheduleList = loan['schedule'] as List;
+
+            final totalAmount = _toDouble(loan['amount']);
+            final term = scheduleList.length;
+            final installmentAmount = term > 0 ? totalAmount / term : 0;
+
+            // Use round() to match borrower screen
+            final paidInstallmentsCount = installmentAmount > 0
+                ? (totalPaidAmount / installmentAmount).round()
+                : 0;
+
+            print('📊 Installment amount: $installmentAmount');
+            print('📊 Total paid amount: $totalPaidAmount');
+            print('📊 Paid installments count (calculated): $paidInstallmentsCount');
+
+            // Track which installments are paid
+            int paidSoFar = 0;
+
+            for (int i = 0; i < scheduleList.length; i++) {
+              final inst = scheduleList[i];
+              if (inst is Map) {
+                String status;
+
+                if (paidSoFar < paidInstallmentsCount) {
+                  status = 'paid';
+                  paidSoFar++;
+                  print('✅ Installment #${i + 1} marked as PAID');
+                } else {
+                  status = inst['status']?.toString().toLowerCase() ?? 'pending';
+                  print('📅 Installment #${i + 1} marked as $status');
+                }
+
+                processedSchedule.add({
+                  'installmentNo': i + 1,
+                  'dueDate': inst['dueDate'] ?? inst['due_date'] ?? '',
+                  'amount': _toDouble(inst['amount']),
+                  'principal': _toDouble(inst['principal'] ?? inst['principalAmount'] ?? 0),
+                  'interest': _toDouble(inst['interest'] ?? inst['interestAmount'] ?? 0),
+                  'status': status,
+                });
+              }
+            }
+
+            print('📅 Total schedule items: ${processedSchedule.length}');
+            print('✅ Total paid installments: $paidSoFar');
+          }
+
+          // Sort payments by date (newest first)
+          allPayments.sort((a, b) {
+            final dateA = a['date'] as DateTime?;
+            final dateB = b['date'] as DateTime?;
+            if (dateA == null) return 1;
+            if (dateB == null) return -1;
+            return dateB.compareTo(dateA);
           });
+
+          // Update the loan object with calculated paid amount
+          loan['paidAmount'] = totalPaidAmount;
+          loan['remainingAmount'] = _toDouble(loan['amount']) - totalPaidAmount;
+
+          setState(() {
+            _loan = loan;
+            _schedule = processedSchedule;
+            _payments = allPayments;
+          });
+
+          print('✅ Successfully loaded guarantor loan details');
+          print('💰 Final paid amount: ${_loan['paidAmount']}');
+          print('📊 Progress: ${_getProgress()}');
+          print('📊 Paid installments in UI: ${_getPaidInstallments()}');
         } else {
-          _showErrorSnackBar(result['message'] ?? 'Failed to load loan details');
-          setState(() {
-            _isLoading = false;
-            _isRefreshing = false;
-          });
+          _showErrorSnackBar(loanResult['message'] ?? 'Failed to load loan details');
         }
       }
     } catch (e) {
       print('❌ Error loading loan details: $e');
       if (mounted) {
-        _showErrorSnackBar('Failed to load loan details. Please try again.');
+        _showErrorSnackBar('Error loading loan details: ${e.toString()}');
+      }
+    } finally {
+      if (mounted) {
         setState(() {
           _isLoading = false;
           _isRefreshing = false;
@@ -122,50 +228,70 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
     }
   }
 
-  Future<void> _loadSchedule() async {
+  Map<String, dynamic>? _processPaymentObject(Map payment) {
     try {
-      final result = await _apiService.getGuarantorLoanSchedule(widget.loanId);
-
-      if (mounted && result['success']) {
-        setState(() {
-          _schedule = result['data']['schedule'] ?? [];
-        });
+      // Extract date from various possible fields
+      DateTime? paymentDate;
+      if (payment['createdAt'] != null) {
+        paymentDate = _parseDate(payment['createdAt']);
+      } else if (payment['date'] != null) {
+        paymentDate = _parseDate(payment['date']);
+      } else if (payment['processedAt'] != null) {
+        paymentDate = _parseDate(payment['processedAt']);
       }
-    } catch (e) {
-      print('❌ Error loading schedule: $e');
-    }
-  }
 
-  Future<void> _loadPayments() async {
-    try {
-      final result = await _apiService.getGuarantorLoanPayments(widget.loanId);
+      // If still no date, use current time as fallback
+      paymentDate ??= DateTime.now();
 
-      if (mounted && result['success']) {
-        setState(() {
-          _payments = result['data']['payments'] ?? [];
-        });
+      // Generate a payment ID for display
+      String displayPaymentId = '';
+      if (payment['invoiceId'] != null) {
+        displayPaymentId = payment['invoiceId'].toString();
+      } else if (payment['transactionId'] != null) {
+        final txnId = payment['transactionId'].toString();
+        displayPaymentId = 'TXN-${txnId.length > 8 ? txnId.substring(0, 8) : txnId}';
+      } else if (payment['_id'] != null) {
+        final id = payment['_id'].toString();
+        displayPaymentId = 'PAY-${id.length > 6 ? id.substring(0, 6) : id}';
+      } else {
+        displayPaymentId = 'PAY-${DateFormat('yyMMdd').format(paymentDate)}';
       }
+
+      // Build reference string
+      String reference = '';
+      if (payment['transactionId'] != null) {
+        reference = 'TXN: ${payment['transactionId']}';
+      } else if (payment['invoiceId'] != null) {
+        reference = 'INV: ${payment['invoiceId']}';
+      } else if (payment['referenceId'] != null) {
+        reference = 'REF: ${payment['referenceId']}';
+      }
+
+      // Map payment method to expected format
+      String method = 'Mobile Money';
+      if (payment['paymentMethod'] != null) {
+        final rawMethod = payment['paymentMethod'].toString().toLowerCase();
+        if (rawMethod.contains('evc')) {
+          method = 'EVC Plus';
+        } else if (rawMethod.contains('edahab') || rawMethod.contains('e-dahab')) {
+          method = 'E-Dahab';
+        } else if (rawMethod.contains('cash')) {
+          method = 'Cash';
+        } else if (rawMethod.contains('bank')) {
+          method = 'Bank Transfer';
+        }
+      }
+
+      return {
+        'paymentId': displayPaymentId,
+        'amount': _toDouble(payment['amount']),
+        'date': paymentDate,
+        'method': method,
+        'reference': reference,
+      };
     } catch (e) {
-      print('❌ Error loading payments: $e');
-    }
-  }
-
-  Future<void> _refreshLoanDetails() async {
-    setState(() => _isRefreshing = true);
-
-    // Reset data
-    setState(() {
-      _schedule = [];
-      _payments = [];
-    });
-
-    await _loadLoanDetails();
-
-    // Reload current tab data if needed
-    if (_currentTabIndex == 1) {
-      await _loadSchedule();
-    } else if (_currentTabIndex == 2) {
-      await _loadPayments();
+      print('⚠️ Error processing payment object: $e');
+      return null;
     }
   }
 
@@ -182,159 +308,171 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
     );
   }
 
-  Color _getStatusColor(String? status) {
-    switch (status?.toLowerCase()) {
+  Future<void> _refreshLoanDetails() async {
+    setState(() => _isRefreshing = true);
+    await _loadLoanDetails();
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
       case 'active':
         return AppColors.primaryGreen;
       case 'overdue':
-        return Colors.red;
+        return Colors.orange;
       case 'completed':
         return Colors.grey;
       case 'pending':
-        return Colors.orange;
-      case 'approved':
         return Colors.blue;
-      default:
-        return Colors.grey;
-    }
-  }
-
-  Color _getRiskColor(String? level) {
-    switch (level?.toLowerCase()) {
-      case 'low':
-        return Colors.green;
-      case 'medium':
-        return Colors.orange;
-      case 'high':
-        return Colors.red;
-      case 'critical':
+      case 'approved':
         return Colors.purple;
+      case 'rejected':
+        return Colors.red;
       default:
-        return Colors.grey;
+        return AppColors.primaryGreen;
     }
   }
 
-  String _getInitials(String? name) {
-    if (name == null || name.isEmpty) return 'UN';
-    final parts = name.split(' ');
-    if (parts.length > 1) {
-      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+  String _getStatusText(String status) {
+    switch (status.toLowerCase()) {
+      case 'active':
+        return 'Active';
+      case 'overdue':
+        return 'Overdue';
+      case 'completed':
+        return 'Completed';
+      case 'pending':
+        return 'Pending Approval';
+      case 'approved':
+        return 'Approved';
+      case 'rejected':
+        return 'Rejected';
+      default:
+        return status;
     }
-    return name[0].toUpperCase();
+  }
+
+  double _getProgress() {
+    if (_loan.isEmpty) return 0.0;
+    final paid = _toDouble(_loan['paidAmount']);
+    final total = _toDouble(_loan['amount']);
+    if (total == 0) return 0.0;
+    return paid / total;
+  }
+
+  int _getPaidInstallments() {
+    if (_schedule.isEmpty) return 0;
+    return _schedule.where((s) => s['status']?.toString().toLowerCase() == 'paid').length;
+  }
+
+  int _getTotalInstallments() {
+    return _schedule.length;
+  }
+
+  Map<String, dynamic>? _getNextPendingInstallment() {
+    if (_schedule.isEmpty) return null;
+    try {
+      return _schedule.firstWhere(
+            (s) => s['status']?.toString().toLowerCase() == 'pending',
+      );
+    } catch (e) {
+      return null;
+    }
+  }
+
+  double _getNextPaymentAmount() {
+    final next = _getNextPendingInstallment();
+    if (next == null) return 0.0;
+    return _toDouble(next['amount']);
+  }
+
+  DateTime? _getNextPaymentDate() {
+    final next = _getNextPendingInstallment();
+    if (next == null) return null;
+    return _parseDate(next['dueDate']);
+  }
+
+  List<PieChartSectionData> _getPaymentChartSections() {
+    final paid = _toDouble(_loan['paidAmount']);
+    final total = _toDouble(_loan['amount']);
+    final remaining = total - paid;
+
+    if (total == 0) {
+      return [
+        PieChartSectionData(
+          value: 1,
+          title: 'No Data',
+          color: Colors.grey.shade300,
+          radius: 50,
+          titleStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+        ),
+      ];
+    }
+
+    if (paid == 0) {
+      return [
+        PieChartSectionData(
+          value: 1,
+          title: '0%',
+          color: Colors.orange.shade300,
+          radius: 50,
+          titleStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+        ),
+      ];
+    }
+
+    return [
+      if (paid > 0)
+        PieChartSectionData(
+          value: paid,
+          title: '${(paid / total * 100).toStringAsFixed(1)}%',
+          color: AppColors.primaryGreen,
+          radius: 50,
+          titleStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+        ),
+      if (remaining > 0)
+        PieChartSectionData(
+          value: remaining,
+          title: '${(remaining / total * 100).toStringAsFixed(1)}%',
+          color: Colors.orange.shade300,
+          radius: 50,
+          titleStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+        ),
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
-    final status = _loan['status']?.toString().toLowerCase() ?? 'unknown';
-    final statusColor = _getStatusColor(status);
-    final borrower = _loan['borrower'] ?? {};
-    final progress = _toDouble(_loan['progress']);
-    final nextPayment = _loan['nextPayment'];
+    final status = _loan['status']?.toString().toLowerCase() ?? 'pending';
 
     return Scaffold(
       backgroundColor: AppColors.background,
       body: _isLoading && !_isRefreshing
-          ? const Center(child: CircularProgressIndicator())
+          ? _buildLoadingShimmer()
           : RefreshIndicator(
         onRefresh: _refreshLoanDetails,
         color: AppColors.primaryGreen,
         child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            // App Bar with Gradient
             SliverAppBar(
               expandedHeight: 200,
               pinned: true,
-              backgroundColor: statusColor,
-              foregroundColor: Colors.white,
+              floating: false,
+              snap: false,
+              backgroundColor: Colors.white,
+              foregroundColor: AppColors.textPrimary,
+              elevation: 4,
               flexibleSpace: FlexibleSpaceBar(
                 titlePadding: const EdgeInsets.only(left: 70, bottom: 16),
                 title: Text(
                   _loan['loanId'] ?? 'Loan Details',
                   style: const TextStyle(
-                    fontSize: 14,
+                    fontSize: 16,
                     fontWeight: FontWeight.w600,
                     color: Colors.white,
                   ),
                 ),
-                background: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        statusColor,
-                        statusColor.withOpacity(0.8),
-                      ],
-                    ),
-                  ),
-                  child: SafeArea(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 50, 20, 20),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Loan Amount',
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.9),
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _currencyFormat.format(_toDouble(_loan['amount'])),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      status == 'overdue'
-                                          ? Icons.warning
-                                          : Icons.check_circle,
-                                      size: 12,
-                                      color: Colors.white,
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      status.toUpperCase(),
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w600,
-                                        fontSize: 11,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
+                background: _buildHeaderBackground(),
               ),
               bottom: PreferredSize(
                 preferredSize: const Size.fromHeight(48),
@@ -346,12 +484,13 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
                     unselectedLabelColor: AppColors.textSecondary,
                     indicatorColor: AppColors.primaryGreen,
                     indicatorWeight: 3,
+                    indicatorSize: TabBarIndicatorSize.label,
                     tabs: const [
                       Tab(
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.home, size: 16),
+                            Icon(Icons.home, size: 18),
                             SizedBox(width: 4),
                             Text('Overview'),
                           ],
@@ -361,7 +500,7 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.schedule, size: 16),
+                            Icon(Icons.schedule, size: 18),
                             SizedBox(width: 4),
                             Text('Schedule'),
                           ],
@@ -371,7 +510,7 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.payment, size: 16),
+                            Icon(Icons.payment, size: 18),
                             SizedBox(width: 4),
                             Text('Payments'),
                           ],
@@ -383,14 +522,13 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
               ),
             ),
 
-            // Tab Bar View
             SliverFillRemaining(
               child: Container(
                 color: Colors.white,
                 child: TabBarView(
                   controller: _tabController,
                   children: [
-                    _buildOverviewTab(borrower, statusColor, progress, nextPayment),
+                    _buildOverviewTab(),
                     _buildScheduleTab(),
                     _buildPaymentsTab(),
                   ],
@@ -403,9 +541,115 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
     );
   }
 
-  Widget _buildOverviewTab(Map<String, dynamic> borrower, Color statusColor, double progress, Map<String, dynamic>? nextPayment) {
-    // Get the loan status from _loan, not from parameters
-    final loanStatus = _loan['status']?.toString().toLowerCase() ?? 'unknown';
+  Widget _buildHeaderBackground() {
+    final status = _loan['status']?.toString().toLowerCase() ?? 'pending';
+    final statusColor = _getStatusColor(status);
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [statusColor, statusColor.withOpacity(0.8)],
+        ),
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 70),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Loan Amount',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.9),
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _currencyFormat.format(_toDouble(_loan['amount'])),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          status == 'overdue' ? Icons.warning : Icons.circle,
+                          size: 12,
+                          color: Colors.white,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          _getStatusText(status),
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoadingShimmer() {
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [
+        Container(
+          height: 200,
+          color: Colors.grey[300],
+        ),
+        const SizedBox(height: 20),
+        ...List.generate(5, (index) => Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Container(
+            height: 60,
+            decoration: BoxDecoration(
+              color: Colors.grey[300],
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        )),
+      ],
+    );
+  }
+
+  Widget _buildOverviewTab() {
+    final status = _loan['status']?.toString().toLowerCase() ?? 'pending';
+    final nextPaymentDate = _getNextPaymentDate();
+    final nextPaymentAmount = _getNextPaymentAmount();
+    final paidInstallments = _getPaidInstallments();
+    final totalInstallments = _getTotalInstallments();
+    final progress = _getProgress();
+    final paidAmount = _toDouble(_loan['paidAmount']);
+    final totalAmount = _toDouble(_loan['amount']);
+    final remainingAmount = totalAmount - paidAmount;
+    final borrower = _loan['borrower'] ?? {};
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -431,13 +675,19 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
                 height: 50,
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                    colors: [statusColor, statusColor.withOpacity(0.7)],
+                    colors: [
+                      _getStatusColor(status).withOpacity(0.7),
+                      _getStatusColor(status),
+                    ],
                   ),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Center(
                   child: Text(
-                    _getInitials(borrower['name']),
+                    borrower['initials'] ??
+                        (borrower['name'] != null
+                            ? borrower['name'][0].toUpperCase()
+                            : 'B'),
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
@@ -452,7 +702,7 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      borrower['name'] ?? 'Unknown',
+                      borrower['name'] ?? 'Borrower',
                       style: const TextStyle(
                         fontWeight: FontWeight.w600,
                         fontSize: 16,
@@ -461,14 +711,6 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
                     const SizedBox(height: 4),
                     Text(
                       borrower['email'] ?? 'No email',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      borrower['phone'] ?? 'No phone',
                       style: TextStyle(
                         fontSize: 12,
                         color: AppColors.textSecondary,
@@ -495,319 +737,354 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
 
         const SizedBox(height: 16),
 
-        // Stats Grid
-        GridView.count(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisCount: 2,
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
-          childAspectRatio: 1.8,
-          children: [
-            _buildStatCard(
-              'Paid Amount',
-              _currencyFormat.format(_toDouble(_loan['paidAmount'])),
-              Icons.payment,
-              Colors.green,
-            ),
-            _buildStatCard(
-              'Remaining',
-              _currencyFormat.format(_toDouble(_loan['remainingAmount'])),
-              Icons.trending_up,
-              Colors.orange,
-            ),
-            _buildStatCard(
-              'Interest Rate',
-              '${_loan['interestRate'] ?? 0}%',
-              Icons.percent,
-              Colors.purple,
-            ),
-            _buildStatCard(
-              'Term',
-              '${_loan['term'] ?? 0} months',
-              Icons.calendar_month,
-              Colors.blue,
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 16),
-
-        // Payment Progress Chart
-        if ((_toDouble(_loan['paidAmount']) > 0) || (_toDouble(_loan['remainingAmount']) > 0))
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Payment Progress',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: SizedBox(
-                        height: 100,
-                        child: PieChart(
-                          PieChartData(
-                            sections: [
-                              PieChartSectionData(
-                                value: _toDouble(_loan['paidAmount']),
-                                title: '${(progress * 100).toInt()}%',
-                                color: Colors.green,
-                                radius: 40,
-                                titleStyle: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                ),
-                              ),
-                              PieChartSectionData(
-                                value: _toDouble(_loan['remainingAmount']),
-                                title: '${(100 - progress * 100).toInt()}%',
-                                color: Colors.orange.shade300,
-                                radius: 40,
-                                titleStyle: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ],
-                            centerSpaceRadius: 30,
-                            sectionsSpace: 2,
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildLegendItem(
-                            'Paid',
-                            Colors.green,
-                            _currencyFormat.format(_toDouble(_loan['paidAmount'])),
-                          ),
-                          const SizedBox(height: 8),
-                          _buildLegendItem(
-                            'Remaining',
-                            Colors.orange.shade300,
-                            _currencyFormat.format(_toDouble(_loan['remainingAmount'])),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-        const SizedBox(height: 16),
-
-        // Loan Details
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-          ),
+        // Payment Chart Card
+        _buildCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Loan Details',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
+              const Text('Payment Breakdown', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    flex: 1,
+                    child: SizedBox(
+                      height: 120,
+                      child: PieChart(
+                        PieChartData(
+                          sections: _getPaymentChartSections(),
+                          centerSpaceRadius: 30,
+                          sectionsSpace: 2,
+                          borderData: FlBorderData(show: false),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    flex: 1,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildLegendItem('Paid', AppColors.primaryGreen, paidAmount),
+                        const SizedBox(height: 12),
+                        _buildLegendItem('Remaining', Colors.orange.shade300, remainingAmount),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 16),
-              _buildDetailRow('Start Date', _loan['startDate'] != null
-                  ? _dateFormat.format(DateTime.parse(_loan['startDate']))
-                  : 'N/A'),
-              _buildDetailRow('End Date', _loan['endDate'] != null
-                  ? _dateFormat.format(DateTime.parse(_loan['endDate']))
-                  : 'N/A'),
-              _buildDetailRow('Purpose', _loan['purpose'] ?? 'N/A'),
-              _buildDetailRow('Description', _loan['description'] ?? 'N/A'),
             ],
           ),
         ),
 
         const SizedBox(height: 16),
 
-        // Risk Assessment
-        if (_risk.isNotEmpty)
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: loanStatus == 'overdue' ? Colors.red : Colors.grey.shade200,
+        // Progress Card
+        _buildCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Repayment Progress', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(child: _buildAmountColumn('Paid', paidAmount)),
+                  Expanded(child: _buildAmountColumn('Remaining', remainingAmount)),
+                ],
               ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.assessment,
-                      color: loanStatus == 'overdue' ? Colors.red : AppColors.primaryGreen,
-                      size: 20,
+              const SizedBox(height: 16),
+              Stack(
+                children: [
+                  Container(
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(5),
                     ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      'Risk Assessment',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
+                  ),
+                  Container(
+                    height: 10,
+                    width: MediaQuery.of(context).size.width * 0.7 * progress,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [AppColors.primaryGreen, AppColors.primaryLight],
                       ),
+                      borderRadius: BorderRadius.circular(5),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 16),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    '${(progress * 100).toStringAsFixed(1)}% Complete',
+                    style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                  ),
+                  if (totalInstallments > 0)
+                    Text(
+                      '$paidInstallments/$totalInstallments installments',
+                      style: TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w500),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 16),
+
+        // Key Information Grid
+        _buildCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Loan Details', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 16),
+              GridView.count(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                crossAxisCount: 2,
+                childAspectRatio: 2.5,
+                crossAxisSpacing: 16,
+                mainAxisSpacing: 16,
+                children: [
+                  _buildInfoTile(
+                    Icons.calendar_today,
+                    'Start Date',
+                    _loan['startDate'] != null ? _dateFormat.format(DateTime.parse(_loan['startDate'])) : 'N/A',
+                  ),
+                  _buildInfoTile(
+                    Icons.event,
+                    'End Date',
+                    _loan['endDate'] != null ? _dateFormat.format(DateTime.parse(_loan['endDate'])) : 'N/A',
+                  ),
+                  _buildInfoTile(Icons.percent, 'Interest', '${_loan['interestRate'] ?? 0}%'),
+                  _buildInfoTile(Icons.access_time, 'Term', '${_loan['term'] ?? 0} months'),
+                  _buildInfoTile(Icons.repeat, 'Frequency', _loan['paymentFrequency'] ?? 'Monthly'),
+                  _buildInfoTile(Icons.payments, 'Installments', '$paidInstallments/$totalInstallments'),
+                ],
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 16),
+
+        // Next Payment Card
+        if ((status == 'active' || status == 'overdue') && nextPaymentAmount > 0)
+          _buildCard(
+            color: status == 'overdue' ? Colors.orange.withOpacity(0.1) : AppColors.primaryGreen.withOpacity(0.1),
+            borderColor: status == 'overdue' ? Colors.orange : AppColors.primaryGreen,
+            child: Row(
+              children: [
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: _getRiskColor(_risk['level']).withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
+                    color: status == 'overdue' ? Colors.orange : AppColors.primaryGreen,
+                    shape: BoxShape.circle,
                   ),
-                  child: Row(
+                  child: Icon(
+                    status == 'overdue' ? Icons.warning_amber_rounded : Icons.calendar_month,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(
-                        _risk['level'] == 'low'
-                            ? Icons.check_circle
-                            : _risk['level'] == 'medium'
-                            ? Icons.warning
-                            : Icons.error,
-                        color: _getRiskColor(_risk['level']),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '${_risk['level']?.toString().toUpperCase() ?? 'UNKNOWN'} RISK',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: _getRiskColor(_risk['level']),
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Score: ${_risk['score'] ?? 'N/A'}',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: AppColors.textSecondary,
-                              ),
-                            ),
-                          ],
+                      Text(
+                        status == 'overdue' ? 'Overdue Payment' : 'Next Payment',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: status == 'overdue' ? Colors.orange : AppColors.primaryGreen,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _currencyFormat.format(nextPaymentAmount),
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: status == 'overdue' ? Colors.orange : AppColors.textPrimary,
+                        ),
+                      ),
+                      if (nextPaymentDate != null)
+                        Text(
+                          'Due: ${_dateFormat.format(nextPaymentDate)}',
+                          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                        ),
                     ],
                   ),
                 ),
-                if (_risk['factors'] != null && _risk['factors'].isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  ...(_risk['factors'] as List).map((factor) {
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.check_circle,
-                            size: 14,
-                            color: AppColors.primaryGreen,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              factor.toString(),
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textSecondary,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }),
-                ],
               ],
             ),
           ),
 
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
+
+        // Recent Payments Preview (if any)
+        if (_payments.isNotEmpty)
+          _buildCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Recent Payments', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    TextButton(
+                      onPressed: () {
+                        _tabController.animateTo(2); // Switch to payments tab
+                      },
+                      child: const Text('View All'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ..._payments.take(3).map((payment) => _buildRecentPaymentPreview(payment)),
+              ],
+            ),
+          ),
+
+        const SizedBox(height: 80),
       ],
     );
   }
 
-  Widget _buildStatCard(String label, String value, IconData icon, Color color) {
+  Widget _buildRecentPaymentPreview(Map<String, dynamic> payment) {
+    final date = payment['date'] as DateTime?;
+
     return Container(
+      margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.background,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.02),
-            blurRadius: 5,
-          ),
-        ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
+      child: Row(
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(icon, size: 12, color: color),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: AppColors.textSecondary,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: AppColors.primaryGreen.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.check_circle,
+              color: AppColors.primaryGreen,
+              size: 16,
+            ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 14,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _currencyFormat.format(payment['amount']),
+                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  date != null ? '${_dateFormat.format(date)} • ${_timeFormat.format(date)}' : 'Date unknown',
+                  style: TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.primaryGreen.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              payment['method'] ?? 'Payment',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: AppColors.primaryGreen,
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildCard({required Widget child, Color? color, Color? borderColor}) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: color ?? Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: borderColor != null ? Border.all(color: borderColor, width: 1.5) : null,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: child,
+    );
+  }
+
+  Widget _buildLegendItem(String label, Color color, dynamic amount) {
+    return Row(
+      children: [
+        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+              Text(_currencyFormat.format(_toDouble(amount)),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAmountColumn(String label, dynamic amount) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+        const SizedBox(height: 4),
+        Text(_currencyFormat.format(_toDouble(amount)),
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      ],
+    );
+  }
+
+  Widget _buildInfoTile(IconData icon, String label, String value) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: AppColors.primaryGreen),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+              const SizedBox(height: 2),
+              Text(value,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -817,11 +1094,11 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.schedule, size: 60, color: Colors.grey[400]),
+            Icon(Icons.schedule, size: 80, color: Colors.grey[400]),
             const SizedBox(height: 16),
             Text(
-              'No schedule available',
-              style: TextStyle(color: Colors.grey[600]),
+              'No payment schedule available',
+              style: TextStyle(color: Colors.grey[600], fontSize: 16, fontWeight: FontWeight.w500),
             ),
           ],
         ),
@@ -830,102 +1107,24 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
 
     return ListView.builder(
       padding: const EdgeInsets.all(16),
+      physics: const AlwaysScrollableScrollPhysics(),
       itemCount: _schedule.length,
       itemBuilder: (context, index) {
         final installment = _schedule[index];
-        final isPaid = installment['status'] == 'paid';
         final dueDate = _parseDate(installment['dueDate']);
-        final isOverdue = !isPaid && dueDate != null && dueDate.isBefore(DateTime.now());
 
         if (dueDate == null) return const SizedBox.shrink();
 
-        return Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: isPaid
-                ? Colors.green.withOpacity(0.05)
-                : isOverdue
-                ? Colors.red.withOpacity(0.05)
-                : Colors.grey.shade50,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: isPaid
-                      ? Colors.green
-                      : isOverdue
-                      ? Colors.red
-                      : Colors.grey.shade300,
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                  child: Text(
-                    '${installment['installmentNo'] ?? index + 1}',
-                    style: TextStyle(
-                      color: isPaid || isOverdue ? Colors.white : Colors.grey.shade600,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _dateFormat.format(dueDate),
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      isPaid
-                          ? 'Paid'
-                          : isOverdue
-                          ? 'Overdue'
-                          : 'Pending',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: isPaid
-                            ? Colors.green
-                            : isOverdue
-                            ? Colors.red
-                            : AppColors.textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    _currencyFormat.format(_toDouble(installment['amount'])),
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: isPaid
-                          ? Colors.green
-                          : isOverdue
-                          ? Colors.red
-                          : AppColors.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'P: ${_currencyFormat.format(_toDouble(installment['principal']))}',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ],
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: InstallmentTile(
+            installmentNo: installment['installmentNo'] ?? index + 1,
+            dueDate: dueDate,
+            amount: _toDouble(installment['amount']),
+            principal: _toDouble(installment['principal']),
+            interest: _toDouble(installment['interest']),
+            status: installment['status']?.toString().toLowerCase() ?? 'pending',
+            isLast: index == _schedule.length - 1,
           ),
         );
       },
@@ -938,11 +1137,16 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.payment, size: 60, color: Colors.grey[400]),
+            Icon(Icons.payment, size: 80, color: Colors.grey[400]),
             const SizedBox(height: 16),
             Text(
               'No payments recorded yet',
-              style: TextStyle(color: Colors.grey[600]),
+              style: TextStyle(color: Colors.grey[600], fontSize: 16, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Payments will appear here once processed',
+              style: TextStyle(color: Colors.grey[500], fontSize: 14),
             ),
           ],
         ),
@@ -951,142 +1155,26 @@ class _GuarantorLoanDetailsScreenState extends State<GuarantorLoanDetailsScreen>
 
     return ListView.builder(
       padding: const EdgeInsets.all(16),
+      physics: const AlwaysScrollableScrollPhysics(),
       itemCount: _payments.length,
       itemBuilder: (context, index) {
         final payment = _payments[index];
-        final paymentDate = _parseDate(payment['date']);
+        final paymentDate = payment['date'] as DateTime?;
 
         if (paymentDate == null) return const SizedBox.shrink();
 
-        return Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.02),
-                blurRadius: 5,
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Center(
-                  child: Icon(
-                    Icons.payment,
-                    color: Colors.green,
-                    size: 20,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _currencyFormat.format(_toDouble(payment['amount'])),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${_dateFormat.format(paymentDate)} • ${_timeFormat.format(paymentDate)}',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    if (payment['method'] != null) ...[
-                      const SizedBox(height: 2),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.blue.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          payment['method'],
-                          style: TextStyle(
-                            fontSize: 9,
-                            color: Colors.blue,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: PaymentTile(
+            paymentId: payment['paymentId'] ?? 'PAY-${index + 1}',
+            amount: _toDouble(payment['amount']),
+            date: paymentDate,
+            method: payment['method'] ?? 'Mobile Money',
+            reference: payment['reference'],
+            isLast: index == _payments.length - 1,
           ),
         );
       },
-    );
-  }
-
-  Widget _buildLegendItem(String label, Color color, String amount) {
-    return Row(
-      children: [
-        Container(width: 12, height: 12, decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-        )),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-              Text(amount, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDetailRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 80,
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                color: AppColors.textSecondary,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

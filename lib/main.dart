@@ -1,8 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'screens/starting_screen.dart';
 import 'utils/app_constants.dart';
+import 'services/notification_service.dart'; // Add this import
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized(); // Add this
+
+  // Initialize Firebase
+  await Firebase.initializeApp();
+
+  // Initialize notification service
+  await NotificationService().init();
+
   runApp(const MyApp());
 }
 

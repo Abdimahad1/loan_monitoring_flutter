@@ -18,6 +18,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
   String _searchQuery = '';
   bool _isLoading = true;
   bool _isLoadingMore = false;
+  bool _isRefreshing = false;
   int _currentPage = 1;
   bool _hasMore = true;
 
@@ -37,6 +38,19 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
 
   final List<String> _filters = ['All', 'Active', 'Overdue', 'Completed'];
 
+  // Helper method to safely convert any value to double
+  double _toDouble(dynamic value) {
+    if (value == null) return 0.0;
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) {
+      final parsed = double.tryParse(value);
+      return parsed ?? 0.0;
+    }
+    if (value is num) return value.toDouble();
+    return 0.0;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -48,6 +62,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
           _scrollController.position.maxScrollExtent - 200 &&
           !_isLoading &&
           !_isLoadingMore &&
+          !_isRefreshing &&
           _hasMore) {
         _loadMoreLoans();
       }
@@ -84,9 +99,9 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
 
       if (mounted) {
         if (result['success']) {
-          setState(() {
-            final newLoans = result['data'] ?? [];
+          final newLoans = result['data'] ?? [];
 
+          setState(() {
             if (reset) {
               _allLoans = newLoans;
             } else {
@@ -103,12 +118,14 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
             _hasMore = _currentPage < (_pagination['pages'] ?? 1);
             _isLoading = false;
             _isLoadingMore = false;
+            _isRefreshing = false;
           });
         } else {
           if (mounted) {
             setState(() {
               _isLoading = false;
               _isLoadingMore = false;
+              _isRefreshing = false;
             });
             _showErrorSnackBar(result['message'] ?? 'Failed to load loans');
           }
@@ -120,6 +137,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
         setState(() {
           _isLoading = false;
           _isLoadingMore = false;
+          _isRefreshing = false;
         });
         _showErrorSnackBar('Failed to load loans. Please try again.');
       }
@@ -127,7 +145,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
   }
 
   Future<void> _loadMoreLoans() async {
-    if (_isLoadingMore || !_hasMore) return;
+    if (_isLoadingMore || !_hasMore || _isRefreshing) return;
 
     setState(() {
       _isLoadingMore = true;
@@ -139,6 +157,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
 
   Future<void> _refreshLoans() async {
     setState(() {
+      _isRefreshing = true;
       _searchQuery = '';
       _searchController.clear();
       _currentPage = 1;
@@ -150,6 +169,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
     setState(() {
       _searchQuery = value;
       _currentPage = 1;
+      _isRefreshing = true;
     });
     _loadLoans(reset: true);
   }
@@ -158,6 +178,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
     setState(() {
       _selectedFilter = index;
       _currentPage = 1;
+      _isRefreshing = true;
     });
     _loadLoans(reset: true);
   }
@@ -375,7 +396,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
   Widget _buildLoanCard(Map<String, dynamic> loan) {
     final status = loan['status']?.toString().toLowerCase() ?? 'unknown';
     final risk = loan['risk']?['level']?.toString().toLowerCase() ?? 'low';
-    final progress = loan['progress'] ?? 0.0;
+    final totalAmount = _toDouble(loan['amount'] ?? 0);
     final statusColor = _getStatusColor(status);
     final riskColor = _getRiskColor(risk);
     final borrower = loan['borrower'] ?? {};
@@ -531,7 +552,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
 
                 const SizedBox(height: 16),
 
-                // Amount & Progress
+                // Amount Row
                 Row(
                   children: [
                     Expanded(
@@ -547,7 +568,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            _currencyFormat.format(loan['amount'] ?? 0),
+                            _currencyFormat.format(totalAmount),
                             style: const TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
@@ -561,50 +582,22 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           Text(
-                            '${(progress * 100).toInt()}% repaid',
+                            'Interest Rate',
                             style: TextStyle(
-                              fontSize: 12,
-                              color: statusColor,
-                              fontWeight: FontWeight.w600,
+                              fontSize: 11,
+                              color: Colors.grey,
                             ),
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Paid: ${_currencyFormat.format(loan['paidAmount'] ?? 0)}',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: AppColors.textSecondary,
+                            '${loan['interestRate'] ?? 0}%',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.orange,
                             ),
                           ),
                         ],
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 12),
-
-                // Progress Bar
-                Stack(
-                  children: [
-                    Container(
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: Colors.grey[200],
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    ),
-                    Container(
-                      height: 8,
-                      width: MediaQuery.of(context).size.width * 0.6 * progress,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            status == 'overdue' ? Colors.orange : AppColors.primaryGreen,
-                            status == 'overdue' ? Colors.red : AppColors.primaryLight,
-                          ],
-                        ),
-                        borderRadius: BorderRadius.circular(4),
                       ),
                     ),
                   ],
@@ -620,29 +613,26 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
-                      Expanded(
-                        child: _buildDetailItem(
-                          'Start Date',
-                          loan['startDate'] != null
-                              ? _dateFormat.format(DateTime.parse(loan['startDate']))
-                              : 'N/A',
-                          Icons.calendar_today,
-                        ),
+                      _buildDetailItem(
+                        'Start Date',
+                        loan['startDate'] != null
+                            ? _dateFormat.format(DateTime.parse(loan['startDate']))
+                            : 'N/A',
+                        Icons.calendar_today,
                       ),
                       Container(
                         height: 30,
                         width: 1,
                         color: Colors.grey[300],
                       ),
-                      Expanded(
-                        child: _buildDetailItem(
-                          'End Date',
-                          loan['endDate'] != null
-                              ? _dateFormat.format(DateTime.parse(loan['endDate']))
-                              : 'N/A',
-                          Icons.event,
-                        ),
+                      _buildDetailItem(
+                        'End Date',
+                        loan['endDate'] != null
+                            ? _dateFormat.format(DateTime.parse(loan['endDate']))
+                            : 'N/A',
+                        Icons.event,
                       ),
                     ],
                   ),
@@ -689,17 +679,18 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                              Text(
-                                status == 'overdue'
-                                    ? 'Due on ${_dateFormat.format(DateTime.parse(nextPayment['dueDate']))}'
-                                    : _dateFormat.format(DateTime.parse(nextPayment['dueDate'])),
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: status == 'overdue'
-                                      ? Colors.red.shade700
-                                      : Colors.blue.shade700,
+                              if (nextPayment['dueDate'] != null)
+                                Text(
+                                  status == 'overdue'
+                                      ? 'Due on ${_dateFormat.format(DateTime.parse(nextPayment['dueDate']))}'
+                                      : _dateFormat.format(DateTime.parse(nextPayment['dueDate'])),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: status == 'overdue'
+                                        ? Colors.red.shade700
+                                        : Colors.blue.shade700,
+                                  ),
                                 ),
-                              ),
                             ],
                           ),
                         ),
@@ -797,7 +788,7 @@ class _GuarantorLoansScreenState extends State<GuarantorLoansScreen> {
         return Padding(
           padding: const EdgeInsets.only(bottom: 12),
           child: Container(
-            height: 220,
+            height: 200,
             decoration: BoxDecoration(
               color: Colors.grey[300],
               borderRadius: BorderRadius.circular(16),
